@@ -253,7 +253,9 @@ async def on_ready():
 
 @bot.tree.command(name="workout_log", description="筋トレ記録を登録します", guild=discord.Object(id=SERVER_ID))
 async def workout_log(interaction: discord.Interaction):
-    await interaction.response.send_modal(WorkoutLogModal())
+    await interaction.response.defer(ephemeral=True)  # ここでまず応答予約
+    await interaction.followup.send_modal(WorkoutLogModal())
+
 
 @bot.tree.command(name="diary", description="英語日記を書いてAIにフィードバックしてもらいます", guild=discord.Object(id=SERVER_ID))
 async def diary(interaction: discord.Interaction):
