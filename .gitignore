@@ -1,0 +1,9 @@
+# Firebase secret files
+firebase_secret*
+firebase_scret*
+
+# Python virtual environment
+venv/
+
+# Environment variables
+.env

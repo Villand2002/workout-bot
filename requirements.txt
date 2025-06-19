@@ -1,0 +1,5 @@
+discord.py
+firebase-admin
+apscheduler
+openai
+requests
