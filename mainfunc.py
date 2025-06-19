@@ -131,33 +131,60 @@ async def workout_history(interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
-# 筋トレおすすめ
+# 筋トレおすすめ（デバッグ版）
 @bot.tree.command(name="workout_recommend", description="筋トレメニューをAIが提案します", guild=discord.Object(id=SERVER_ID))
 async def workout_recommend(interaction: discord.Interaction):
     try:
+        print(f"workout_recommend started for user: {interaction.user.id}")
+        
         if interaction.channel.id != WORKOUT_CHANNEL_ID:
             await interaction.response.send_message("このコマンドは指定の筋トレチャンネルでのみ利用できます。", ephemeral=True)
             return
 
         await interaction.response.defer()
+        print("Response deferred successfully")
 
         user_id = str(interaction.user.id)
+        print(f"User ID: {user_id}")
+        
+        # Firestoreからデータ取得
         logs_ref = db.collection('training_logs').document(user_id).collection('logs')
+        print("Firestore reference created")
+        
         docs = logs_ref.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(100).stream()
+        print("Firestore query executed")
 
         category_dates = defaultdict(lambda: datetime.datetime(2000, 1, 1))
         recent_logs = []
+        doc_count = 0
 
         for doc in docs:
+            doc_count += 1
             entry = doc.to_dict()
-            category = entry['category']
+            print(f"Processing doc {doc_count}: {entry}")
+            
+            category = entry.get('category')
             ts = entry.get('timestamp')
+            
+            if not category:
+                print(f"Warning: No category found in entry: {entry}")
+                continue
+                
             if ts:
                 if ts > category_dates[category]:
                     category_dates[category] = ts
-                if ts >= datetime.datetime.utcnow() - datetime.timedelta(days=3):
+                    
+                # 直近3日間のチェック（UTCとの時差を考慮）
+                three_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=3)
+                if ts >= three_days_ago:
                     ts_str = ts.strftime("%Y-%m-%d")
-                    recent_logs.append(f"{ts_str}: {category} - {entry['exercise']} {entry['weight']}kg x {entry['reps']}回")
+                    recent_logs.append(f"{ts_str}: {category} - {entry.get('exercise', 'Unknown')} {entry.get('weight', 0)}kg x {entry.get('reps', 0)}回")
+            else:
+                print(f"Warning: No timestamp found in entry: {entry}")
+
+        print(f"Processed {doc_count} documents")
+        print(f"Category dates: {dict(category_dates)}")
+        print(f"Recent logs: {recent_logs}")
 
         if not category_dates:
             await interaction.followup.send("まだ記録がないので、まずは記録してください！")
@@ -167,6 +194,9 @@ async def workout_recommend(interaction: discord.Interaction):
         target_category = sorted_categories[0][0]
         recent_summary = "\n".join(recent_logs) if recent_logs else "直近3日間にトレーニング記録はありません。"
 
+        print(f"Target category: {target_category}")
+        print(f"Recent summary: {recent_summary}")
+
         prompt = f"""
 以下は直近3日間のトレーニング記録です：
 {recent_summary}
@@ -174,6 +204,9 @@ async def workout_recommend(interaction: discord.Interaction):
 筋肉のバランス、疲労を考慮して今日のダンベルトレーニングメニューを提案してください。
 """
 
+        print("Sending request to OpenAI...")
+        
+        # OpenAI APIの呼び出し
         response = openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -181,17 +214,29 @@ async def workout_recommend(interaction: discord.Interaction):
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
-             max_tokens=500
+            max_tokens=500
         )
+        
+        print("OpenAI response received")
         reply = response.choices[0].message.content
+        print(f"AI reply: {reply[:100]}...")
+        
         await interaction.followup.send(f"💡 今日のおすすめメニュー:\n{reply}")
+        print("Response sent successfully")
 
     except Exception as e:
         print(f"Error in workout_recommend: {e}")
-        if interaction.response.is_done():
-            await interaction.followup.send("エラーが発生しました。")
-        else:
-            await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
+        print(f"Error type: {type(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"エラーが発生しました: {str(e)}")
+            else:
+                await interaction.response.send_message(f"エラーが発生しました: {str(e)}", ephemeral=True)
+        except Exception as followup_error:
+            print(f"Error sending error message: {followup_error}")
 
 # 英語日記コマンド
 @bot.tree.command(name="diary", description="英語日記を書いてAIにフィードバックしてもらいます", guild=discord.Object(id=SERVER_ID))
