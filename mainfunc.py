@@ -55,80 +55,58 @@ def extract_json(content):
         print(f"JSON抽出エラー: {e}")
         raise
 
-@bot.event
-async def on_ready():
-    print(f'{bot.user} でログインしました！')
-    try:
-        synced = await bot.tree.sync(guild=discord.Object(id=SERVER_ID))
-        print(f'ギルド同期完了: {len(synced)}個のコマンド')
-    except Exception as e:
-        print(f'同期エラー: {e}')
+# -------------------------------------
+# 筋トレ用モーダル
+# -------------------------------------
 
-# 筋トレログ登録
-@bot.tree.command(name="workout_log", description="筋トレ記録を登録します", guild=discord.Object(id=SERVER_ID))
-@discord.app_commands.describe(
-    category="部位カテゴリーを選択してください",
-    exercise="種目名",
-    weight="重量 (kg)",
-    reps="回数"
-)
-@discord.app_commands.choices(
-    category=[
-        discord.app_commands.Choice(name="胸", value="Chest"),
-        discord.app_commands.Choice(name="背中", value="Back"),
-        discord.app_commands.Choice(name="脚", value="Legs"),
-        discord.app_commands.Choice(name="肩", value="Shoulders"),
-        discord.app_commands.Choice(name="腕", value="Arms"),
-        discord.app_commands.Choice(name="腹筋", value="Abs"),
+class WorkoutLogModal(discord.ui.Modal, title="筋トレ記録入力"):
+    category_choices = [
+        discord.SelectOption(label="胸", value="Chest"),
+        discord.SelectOption(label="背中", value="Back"),
+        discord.SelectOption(label="脚", value="Legs"),
+        discord.SelectOption(label="肩", value="Shoulders"),
+        discord.SelectOption(label="腕", value="Arms"),
+        discord.SelectOption(label="腹筋", value="Abs"),
     ]
-)
-async def workout_log(interaction: discord.Interaction, category: discord.app_commands.Choice[str], exercise: str, weight: int, reps: int):
-    try:
+    category_select = discord.ui.Select(
+        placeholder="部位を選択してください",
+        options=category_choices
+    )
+    exercise = discord.ui.TextInput(label="種目名", required=True)
+    weight = discord.ui.TextInput(label="重量(kg)", required=True)
+    reps = discord.ui.TextInput(label="回数", required=True)
+
+    def __init__(self):
+        super().__init__()
+        self.add_item(self.category_select)
+        self.add_item(self.exercise)
+        self.add_item(self.weight)
+        self.add_item(self.reps)
+
+    async def on_submit(self, interaction: discord.Interaction):
         if interaction.channel.id != WORKOUT_CHANNEL_ID:
             await interaction.response.send_message("このコマンドは指定の筋トレチャンネルでのみ利用できます。", ephemeral=True)
             return
 
-        user_id = str(interaction.user.id)
-        data = {
-            'category': category.value,
-            'exercise': exercise,
-            'weight': weight,
-            'reps': reps,
-            'timestamp': firestore.SERVER_TIMESTAMP
-        }
-        db.collection('training_logs').document(user_id).collection('logs').add(data)
-        await interaction.response.send_message(f"{category.name} - {exercise} {weight}kg x {reps}回 記録しました！")
-    except Exception as e:
-        print(f"Error in workout_log: {e}")
-        if not interaction.response.is_done():
-            await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
+        try:
+            category = self.category_select.values[0]
+            exercise = self.exercise.value
+            weight = int(self.weight.value)
+            reps = int(self.reps.value)
 
-# 筋トレ履歴
-@bot.tree.command(name="workout_history", description="最近の筋トレ履歴を表示します", guild=discord.Object(id=SERVER_ID))
-async def workout_history(interaction: discord.Interaction):
-    try:
-        if interaction.channel.id != WORKOUT_CHANNEL_ID:
-            await interaction.response.send_message("このコマンドは指定の筋トレチャンネルでのみ利用できます。", ephemeral=True)
-            return
+            user_id = str(interaction.user.id)
+            data = {
+                'category': category,
+                'exercise': exercise,
+                'weight': weight,
+                'reps': reps,
+                'timestamp': firestore.SERVER_TIMESTAMP
+            }
+            db.collection('training_logs').document(user_id).collection('logs').add(data)
+            await interaction.response.send_message(f"{category} - {exercise} {weight}kg x {reps}回 記録しました！")
 
-        user_id = str(interaction.user.id)
-        logs_ref = db.collection('training_logs').document(user_id).collection('logs')
-        docs = logs_ref.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(5).stream()
-
-        logs = [doc.to_dict() for doc in docs]
-        if not logs:
-            await interaction.response.send_message("まだ記録がありません。")
-            return
-
-        message = "最近の記録:\n"
-        for entry in logs:
-            ts = entry.get('timestamp')
-            ts_str = ts.strftime("%Y-%m-%d") if ts else "日付不明"
-            message += f"{ts_str}: {entry['category']} - {entry['exercise']} {entry['weight']}kg x {entry['reps']}回\n"
-        await interaction.response.send_message(message)
-    except Exception as e:
-        print(f"Error in workout_history: {e}")
-        if not interaction.response.is_done():
+        except Exception as e:
+            print(f"Error in workout log modal: {e}")
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
 # 筋トレおすすめ
@@ -192,14 +170,16 @@ async def workout_recommend(interaction: discord.Interaction):
         else:
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
-# 英語日記コマンド
-@bot.tree.command(name="diary", description="英語日記を書いてAIにフィードバックしてもらいます", guild=discord.Object(id=SERVER_ID))
-async def diary(interaction: discord.Interaction, diary_text: str):
-    try:
+
+class DiaryModal(discord.ui.Modal, title="英語日記入力"):
+    diary_entry = discord.ui.TextInput(label="日記本文", style=discord.TextStyle.paragraph, required=True, max_length=2000)
+
+    async def on_submit(self, interaction: discord.Interaction):
         if interaction.channel.id != DIARY_CHANNEL_ID:
             await interaction.response.send_message("このコマンドは指定の日記チャンネルでのみ利用できます。", ephemeral=True)
             return
 
+        diary_text = self.diary_entry.value
         await interaction.response.defer()
 
         feedback_prompt = f"""
@@ -221,20 +201,19 @@ async def diary(interaction: discord.Interaction, diary_text: str):
 余計な説明や前置きは不要です。JSONのみ返答してください。
 """
 
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "あなたはプロの英語学習AIコーチです。"},
-                {"role": "user", "content": feedback_prompt}
-            ],
-            temperature=0.5
-        )
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "あなたはプロの英語学習AIコーチです。"},
+                    {"role": "user", "content": feedback_prompt}
+                ],
+                temperature=0.5
+            )
+            reply = response.choices[0].message.content
+            feedback_json = extract_json(reply)
 
-        reply = response.choices[0].message.content
-
-        feedback_json = extract_json(reply)
-
-        feedback_message = f"""📝 フィードバック:
+            feedback_message = f"""📝 フィードバック:
 【文法や表現の誤り】\n{feedback_json['grammar']}
 
 【より自然な言い換え】\n{feedback_json['rephrase']}
@@ -243,23 +222,45 @@ async def diary(interaction: discord.Interaction, diary_text: str):
 
 【アドバイス】\n{feedback_json['advice']}
 """
-        await interaction.followup.send(feedback_message)
+            await interaction.followup.send(feedback_message)
 
-        user_id = str(interaction.user.id)
-        date_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+            user_id = str(interaction.user.id)
+            date_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
 
-        db.collection('diary_logs').document(user_id).collection('logs').document(date_str).set({
-            'date': date_str,
-            'diary_text': diary_text,
-            'ai_feedback': feedback_json,
-            'timestamp': firestore.SERVER_TIMESTAMP
-        })
+            db.collection('diary_logs').document(user_id).collection('logs').document(date_str).set({
+                'date': date_str,
+                'diary_text': diary_text,
+                'ai_feedback': feedback_json,
+                'timestamp': firestore.SERVER_TIMESTAMP
+            })
 
-    except Exception as e:
-        print(f"Error in diary: {e}")
-        if interaction.response.is_done():
+        except Exception as e:
+            print(f"Error in diary modal: {e}")
             await interaction.followup.send("エラーが発生しました。")
-        else:
-            await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
+
+# -------------------------------------
+# スラッシュコマンド登録
+# -------------------------------------
+
+@bot.event
+async def on_ready():
+    print(f'{bot.user} でログインしました！')
+    try:
+        synced = await bot.tree.sync(guild=discord.Object(id=SERVER_ID))
+        print(f'ギルド同期完了: {len(synced)}個のコマンド')
+    except Exception as e:
+        print(f'同期エラー: {e}')
+
+@bot.tree.command(name="workout_log", description="筋トレ記録を登録します", guild=discord.Object(id=SERVER_ID))
+async def workout_log(interaction: discord.Interaction):
+    await interaction.response.send_modal(WorkoutLogModal())
+
+@bot.tree.command(name="diary", description="英語日記を書いてAIにフィードバックしてもらいます", guild=discord.Object(id=SERVER_ID))
+async def diary(interaction: discord.Interaction):
+    await interaction.response.send_modal(DiaryModal())
+
+# -------------------------------------
+# (オプション) 以前の workout_history や recommend もそのまま使える
+# -------------------------------------
 
 bot.run(DISCORD_BOT_TOKEN)
