@@ -15,6 +15,7 @@ DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 SERVER_ID = int(os.environ.get("SERVER_ID"))
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+DIARY_CHANNEL_ID = int(os.environ.get("DIARY_CHANNEL_ID"))
 FIREBASE_CREDENTIAL_JSON = os.environ.get("FIREBASE_CREDENTIAL_JSON")
 
 # Firebase初期化
@@ -112,7 +113,7 @@ async def recommend(ctx):
 以下は直近3日間のトレーニング記録です：
 {recent_summary}
 
-最近「{target_category}」の部位をトレーニングしていないので、今日の筋トレメニューを具体的に提案してください。
+今日の筋トレメニューを具体的に提案してください。
 筋肉のバランス、疲労を考慮して提案してください。
 種目名、セット数、回数、注意点なども具体的にお願いします。
 """
@@ -128,6 +129,56 @@ async def recommend(ctx):
 
     reply = response['choices'][0]['message']['content']
     await ctx.send(f"💡 今日のおすすめメニュー（部位: {target_category}）：\n{reply}")
+    
+    
+@bot.event
+async def on_message(message):
+    # Bot自身のメッセージは無視
+    if message.author == bot.user:
+        return
+
+    # 日記チャンネルのみ反応
+    if message.channel.id != DIARY_CHANNEL_ID:
+        return
+
+    # 英作文をAIにフィードバックさせる
+    user_id = str(message.author.id)
+    diary_text = message.content
+
+    feedback_prompt = f"""
+以下はユーザーが書いた英語日記です：
+
+"{diary_text}"
+
+あなたは英語学習のAIコーチです。この日記について以下のフィードバックをください：
+1. 間違っている文法や表現
+2. より自然な言い換え
+3. 便利な表現やフレーズ
+4. 簡単なアドバイス
+
+日本語でわかりやすく解説してください。
+"""
+
+    response = openai.ChatCompletion.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "あなたはプロの英語学習AIコーチです。"},
+            {"role": "user", "content": feedback_prompt}
+        ],
+        temperature=0.5
+    )
+
+    reply = response['choices'][0]['message']['content']
+
+    await message.reply(f"📝 フィードバック:\n{reply}")
+
+    # Firestoreに記録
+    db.collection('diary_logs').document(user_id).collection('logs').add({
+        'text': diary_text,
+        'feedback': reply,
+        'timestamp': firestore.SERVER_TIMESTAMP
+    })
+
 
 
 # 毎日12時リマインダー
