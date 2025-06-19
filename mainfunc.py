@@ -171,7 +171,6 @@ async def workout_recommend(interaction: discord.Interaction):
 以下は直近3日間のトレーニング記録です：
 {recent_summary}
 
-最近「{target_category}」の部位をあまり鍛えていません。
 筋肉のバランス、疲労を考慮して今日のダンベルトレーニングメニューを提案してください。
 """
 
@@ -181,7 +180,8 @@ async def workout_recommend(interaction: discord.Interaction):
                 {"role": "system", "content": "あなたは筋トレ専門のAIトレーナーです。"},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7
+            temperature=0.7,
+             max_tokens=500
         )
         reply = response.choices[0].message.content
         await interaction.followup.send(f"💡 今日のおすすめメニュー:\n{reply}")
