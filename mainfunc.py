@@ -54,7 +54,23 @@ async def on_ready():
         print(f'同期エラー: {e}')
 
 @bot.tree.command(name="workout_log", description="筋トレ記録を登録します", guild=discord.Object(id=SERVER_ID))
-async def workout_log(interaction: discord.Interaction, category: str, exercise: str, weight: int, reps: int):
+@discord.app_commands.describe(
+    category="部位カテゴリーを選択してください",
+    exercise="種目名",
+    weight="重量 (kg)",
+    reps="回数"
+)
+@discord.app_commands.choices(
+    category=[
+        discord.app_commands.Choice(name="胸", value="Chest"),
+        discord.app_commands.Choice(name="背中", value="Back"),
+        discord.app_commands.Choice(name="脚", value="Legs"),
+        discord.app_commands.Choice(name="肩", value="Shoulders"),
+        discord.app_commands.Choice(name="腕", value="Arms"),
+        discord.app_commands.Choice(name="腹筋", value="Abs"),
+    ]
+)
+async def workout_log(interaction: discord.Interaction, category: discord.app_commands.Choice[str], exercise: str, weight: int, reps: int):
     try:
         if interaction.channel.id != WORKOUT_CHANNEL_ID:
             await interaction.response.send_message("このコマンドは指定の筋トレチャンネルでのみ利用できます。", ephemeral=True)
@@ -62,18 +78,19 @@ async def workout_log(interaction: discord.Interaction, category: str, exercise:
 
         user_id = str(interaction.user.id)
         data = {
-            'category': category,
+            'category': category.value,  # ここ注意：choiceのvalueを取る
             'exercise': exercise,
             'weight': weight,
             'reps': reps,
             'timestamp': firestore.SERVER_TIMESTAMP
         }
         db.collection('training_logs').document(user_id).collection('logs').add(data)
-        await interaction.response.send_message(f"{category} - {exercise} {weight}kg x {reps}回 記録しました！")
+        await interaction.response.send_message(f"{category.name} - {exercise} {weight}kg x {reps}回 記録しました！")
     except Exception as e:
         print(f"Error in workout_log: {e}")
         if not interaction.response.is_done():
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
+
 
 @bot.tree.command(name="workout_history", description="最近の筋トレ履歴を表示します", guild=discord.Object(id=SERVER_ID))
 async def workout_history(interaction: discord.Interaction):
@@ -140,7 +157,6 @@ async def workout_recommend(interaction: discord.Interaction):
 以下は直近3日間のトレーニング記録です：
 {recent_summary}
 
-最近「{target_category}」の部位をあまり鍛えていません。
 筋肉のバランス、疲労を考慮して今日のダンベルトレーニングメニューを提案してください。
 """
 
@@ -176,13 +192,18 @@ async def diary(interaction: discord.Interaction, diary_text: str):
 
 "{diary_text}"
 
-あなたは英語学習のAIコーチです。この日記について以下のフィードバックをください：
-1. 間違っている文法や表現
-2. より自然な言い換え
-3. 便利な表現やフレーズ
-4. 簡単なアドバイス
+あなたは英語学習のAIコーチです。
+以下のJSON形式で出力してください。
 
-日本語でわかりやすく解説してください。
+{{
+  "grammar": "...文法ミスや不自然な表現...",
+  "rephrase": "...より自然な言い換え...",
+  "useful_phrases": "...便利な表現やフレーズ...",
+  "advice": "...簡単なアドバイス..."
+}}
+
+すべて日本語で出力してください。
+余計な説明や前置きは不要です。JSONのみ返答してください。
 """
 
         response = openai_client.chat.completions.create(
@@ -196,12 +217,29 @@ async def diary(interaction: discord.Interaction, diary_text: str):
 
         reply = response.choices[0].message.content
 
-        await interaction.followup.send(f"📝 フィードバック:\n{reply}")
+        # JSONパース
+        feedback_json = json.loads(reply)
 
+        # フィードバックを整形して表示用にまとめる
+        feedback_message = f"""📝 フィードバック:
+【文法や表現の誤り】\n{feedback_json['grammar']}
+
+【より自然な言い換え】\n{feedback_json['rephrase']}
+
+【便利な表現やフレーズ】\n{feedback_json['useful_phrases']}
+
+【アドバイス】\n{feedback_json['advice']}
+"""
+        await interaction.followup.send(feedback_message)
+
+        # Firestoreに保存
         user_id = str(interaction.user.id)
-        db.collection('diary_logs').document(user_id).collection('logs').add({
-            'text': diary_text,
-            'feedback': reply,
+        date_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+
+        db.collection('diary_logs').document(user_id).collection('logs').document(date_str).set({
+            'date': date_str,
+            'diary_text': diary_text,
+            'ai_feedback': feedback_json,
             'timestamp': firestore.SERVER_TIMESTAMP
         })
 
@@ -211,5 +249,6 @@ async def diary(interaction: discord.Interaction, diary_text: str):
             await interaction.followup.send("エラーが発生しました。")
         else:
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
+
 
 bot.run(DISCORD_BOT_TOKEN)
