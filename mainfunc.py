@@ -2,20 +2,23 @@ import os
 import base64
 import json
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import firebase_admin
-import asyncio
 from firebase_admin import credentials, firestore
 import datetime
-import openai
+from openai import OpenAI
 from collections import defaultdict
+from dotenv import load_dotenv
+
+# .env 読み込み
+load_dotenv()
 
 # 環境変数取得
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 SERVER_ID = int(os.environ.get("SERVER_ID"))
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+WORKOUT_CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
 DIARY_CHANNEL_ID = int(os.environ.get("DIARY_CHANNEL_ID"))
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 FIREBASE_CREDENTIAL_JSON = os.environ.get("FIREBASE_CREDENTIAL_JSON")
 
 # Firebase初期化
@@ -26,126 +29,149 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 # OpenAI初期化
-openai.api_key = OPENAI_API_KEY
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Discord Bot設定
+# commands.Botを使用（推奨方法）
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='/', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-# コマンド実行前にサーバー&チャンネル制限
-@bot.check
-async def only_in_target_guild_and_channel(ctx):
-    return ctx.guild and ctx.guild.id == SERVER_ID and ctx.channel.id == CHANNEL_ID
+@bot.event
+async def on_ready():
+    print(f'{bot.user} でログインしました！')
+    try:
+        # ギルド同期
+        synced = await bot.tree.sync(guild=discord.Object(id=SERVER_ID))
+        print(f'ギルド同期完了: {len(synced)}個のコマンド')
+        
+        # もしギルド同期が失敗したらグローバル同期
+        if len(synced) == 0:
+            print("ギルド同期失敗、グローバル同期を試行...")
+            global_synced = await bot.tree.sync()
+            print(f'グローバル同期完了: {len(global_synced)}個のコマンド')
+            
+    except Exception as e:
+        print(f'同期エラー: {e}')
 
-# 筋トレ記録
-@bot.command()
-async def log(ctx, category, exercise, weight: int, reps: int):
-    user_id = str(ctx.author.id)
-    data = {
-        'category': category,
-        'exercise': exercise,
-        'weight': weight,
-        'reps': reps,
-        'timestamp': firestore.SERVER_TIMESTAMP
-    }
-    db.collection('training_logs').document(user_id).collection('logs').add(data)
-    await ctx.send(f"{category} - {exercise} {weight}kg x {reps}回 記録しました！")
+@bot.tree.command(name="workout_log", description="筋トレ記録を登録します", guild=discord.Object(id=SERVER_ID))
+async def workout_log(interaction: discord.Interaction, category: str, exercise: str, weight: int, reps: int):
+    try:
+        if interaction.channel.id != WORKOUT_CHANNEL_ID:
+            await interaction.response.send_message("このコマンドは指定の筋トレチャンネルでのみ利用できます。", ephemeral=True)
+            return
 
-# 履歴確認
-@bot.command()
-async def history(ctx):
-    user_id = str(ctx.author.id)
-    logs_ref = db.collection('training_logs').document(user_id).collection('logs')
-    docs = logs_ref.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(5).stream()
+        user_id = str(interaction.user.id)
+        data = {
+            'category': category,
+            'exercise': exercise,
+            'weight': weight,
+            'reps': reps,
+            'timestamp': firestore.SERVER_TIMESTAMP
+        }
+        db.collection('training_logs').document(user_id).collection('logs').add(data)
+        await interaction.response.send_message(f"{category} - {exercise} {weight}kg x {reps}回 記録しました！")
+    except Exception as e:
+        print(f"Error in workout_log: {e}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
-    logs = [doc.to_dict() for doc in docs]
-    if not logs:
-        await ctx.send("まだ記録がありません。")
-        return
+@bot.tree.command(name="workout_history", description="最近の筋トレ履歴を表示します", guild=discord.Object(id=SERVER_ID))
+async def workout_history(interaction: discord.Interaction):
+    try:
+        if interaction.channel.id != WORKOUT_CHANNEL_ID:
+            await interaction.response.send_message("このコマンドは指定の筋トレチャンネルでのみ利用できます。", ephemeral=True)
+            return
 
-    message = "最近の記録:\n"
-    for entry in logs:
-        ts = entry['timestamp'].strftime("%Y-%m-%d") if entry['timestamp'] else "日付不明"
-        message += f"{ts}: {entry['category']} - {entry['exercise']} {entry['weight']}kg x {entry['reps']}回\n"
-    await ctx.send(message)
+        user_id = str(interaction.user.id)
+        logs_ref = db.collection('training_logs').document(user_id).collection('logs')
+        docs = logs_ref.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(5).stream()
 
+        logs = [doc.to_dict() for doc in docs]
+        if not logs:
+            await interaction.response.send_message("まだ記録がありません。")
+            return
 
-@bot.command()
-async def recommend(ctx):
-    user_id = str(ctx.author.id)
-    logs_ref = db.collection('training_logs').document(user_id).collection('logs')
-    docs = logs_ref.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(100).stream()
+        message = "最近の記録:\n"
+        for entry in logs:
+            ts = entry['timestamp'].strftime("%Y-%m-%d") if entry['timestamp'] else "日付不明"
+            message += f"{ts}: {entry['category']} - {entry['exercise']} {entry['weight']}kg x {entry['reps']}回\n"
+        await interaction.response.send_message(message)
+    except Exception as e:
+        print(f"Error in workout_history: {e}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
-    category_dates = defaultdict(lambda: datetime.datetime(2000, 1, 1))
-    recent_logs = []
+@bot.tree.command(name="workout_recommend", description="筋トレメニューをAIが提案します", guild=discord.Object(id=SERVER_ID))
+async def workout_recommend(interaction: discord.Interaction):
+    try:
+        if interaction.channel.id != WORKOUT_CHANNEL_ID:
+            await interaction.response.send_message("このコマンドは指定の筋トレチャンネルでのみ利用できます。", ephemeral=True)
+            return
 
-    for doc in docs:
-        entry = doc.to_dict()
-        category = entry['category']
-        ts = entry['timestamp']
-        if ts:
-            # 各カテゴリの最新日更新
-            if ts > category_dates[category]:
-                category_dates[category] = ts
+        await interaction.response.defer()
 
-            # 直近3日分の記録を収集
-            if ts >= datetime.datetime.utcnow() - datetime.timedelta(days=3):
-                ts_str = ts.strftime("%Y-%m-%d")
-                recent_logs.append(f"{ts_str}: {category} - {entry['exercise']} {entry['weight']}kg x {entry['reps']}回")
+        user_id = str(interaction.user.id)
+        logs_ref = db.collection('training_logs').document(user_id).collection('logs')
+        docs = logs_ref.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(100).stream()
 
-    if not category_dates:
-        await ctx.send("まだ記録がないので、まずは記録してください！")
-        return
+        category_dates = defaultdict(lambda: datetime.datetime(2000, 1, 1))
+        recent_logs = []
 
-    sorted_categories = sorted(category_dates.items(), key=lambda x: x[1])
-    target_category = sorted_categories[0][0]
+        for doc in docs:
+            entry = doc.to_dict()
+            category = entry['category']
+            ts = entry['timestamp']
+            if ts:
+                if ts > category_dates[category]:
+                    category_dates[category] = ts
+                if ts >= datetime.datetime.utcnow() - datetime.timedelta(days=3):
+                    ts_str = ts.strftime("%Y-%m-%d")
+                    recent_logs.append(f"{ts_str}: {category} - {entry['exercise']} {entry['weight']}kg x {entry['reps']}回")
 
-    # 直近3日分の履歴文作成
-    if recent_logs:
-        recent_summary = "\n".join(recent_logs)
-    else:
-        recent_summary = "直近3日間にトレーニング記録はありません。"
+        if not category_dates:
+            await interaction.followup.send("まだ記録がないので、まずは記録してください！")
+            return
 
-    # AIへのプロンプト
-    prompt = f"""
-あなたは優秀なパーソナルトレーナーです。
+        sorted_categories = sorted(category_dates.items(), key=lambda x: x[1])
+        target_category = sorted_categories[0][0]
+        recent_summary = "\n".join(recent_logs) if recent_logs else "直近3日間にトレーニング記録はありません。"
+
+        prompt = f"""
 以下は直近3日間のトレーニング記録です：
 {recent_summary}
 
-今日の筋トレメニューを具体的に提案してください。
-筋肉のバランス、疲労を考慮して提案してください。
-種目名、セット数、回数、注意点なども具体的にお願いします。
+最近「{target_category}」の部位をあまり鍛えていません。
+筋肉のバランス、疲労を考慮して今日のダンベルトレーニングメニューを提案してください。
 """
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "あなたは筋トレ専門のAIトレーナーです。"},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.7
-    )
-
-    reply = response['choices'][0]['message']['content']
-    await ctx.send(f"💡 今日のおすすめメニュー（部位: {target_category}）：\n{reply}")
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "あなたは筋トレ専門のAIトレーナーです。"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7
+        )
+        reply = response.choices[0].message.content
+        await interaction.followup.send(f"💡 今日のおすすめメニュー:\n{reply}")
     
-    
-@bot.event
-async def on_message(message):
-    # Bot自身のメッセージは無視
-    if message.author == bot.user:
-        return
+    except Exception as e:
+        print(f"Error in workout_recommend: {e}")
+        if interaction.response.is_done():
+            await interaction.followup.send("エラーが発生しました。")
+        else:
+            await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
-    # 日記チャンネルのみ反応
-    if message.channel.id != DIARY_CHANNEL_ID:
-        return
+@bot.tree.command(name="diary", description="英語日記を書いてAIにフィードバックしてもらいます", guild=discord.Object(id=SERVER_ID))
+async def diary(interaction: discord.Interaction, diary_text: str):
+    try:
+        if interaction.channel.id != DIARY_CHANNEL_ID:
+            await interaction.response.send_message("このコマンドは指定の日記チャンネルでのみ利用できます。", ephemeral=True)
+            return
 
-    # 英作文をAIにフィードバックさせる
-    user_id = str(message.author.id)
-    diary_text = message.content
+        await interaction.response.defer()
 
-    feedback_prompt = f"""
+        feedback_prompt = f"""
 以下はユーザーが書いた英語日記です：
 
 "{diary_text}"
@@ -159,43 +185,31 @@ async def on_message(message):
 日本語でわかりやすく解説してください。
 """
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "あなたはプロの英語学習AIコーチです。"},
-            {"role": "user", "content": feedback_prompt}
-        ],
-        temperature=0.5
-    )
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "あなたはプロの英語学習AIコーチです。"},
+                {"role": "user", "content": feedback_prompt}
+            ],
+            temperature=0.5
+        )
 
-    reply = response['choices'][0]['message']['content']
+        reply = response.choices[0].message.content
 
-    await message.reply(f"📝 フィードバック:\n{reply}")
+        await interaction.followup.send(f"📝 フィードバック:\n{reply}")
 
-    # Firestoreに記録
-    db.collection('diary_logs').document(user_id).collection('logs').add({
-        'text': diary_text,
-        'feedback': reply,
-        'timestamp': firestore.SERVER_TIMESTAMP
-    })
+        user_id = str(interaction.user.id)
+        db.collection('diary_logs').document(user_id).collection('logs').add({
+            'text': diary_text,
+            'feedback': reply,
+            'timestamp': firestore.SERVER_TIMESTAMP
+        })
 
+    except Exception as e:
+        print(f"Error in diary: {e}")
+        if interaction.response.is_done():
+            await interaction.followup.send("エラーが発生しました。")
+        else:
+            await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
-
-# 毎日12時リマインダー
-@bot.event
-async def on_ready():
-    print(f'{bot.user} でログインしました！')
-    reminder_loop.start()
-
-@tasks.loop(minutes=1)
-async def reminder_loop():
-    now = datetime.datetime.now()
-    if now.hour == 17 and now.minute == 0:
-        guild = bot.get_guild(SERVER_ID)
-        if guild:
-            channel = guild.get_channel(CHANNEL_ID)
-            if channel:
-                await channel.send("💪 今日も筋トレ頑張りましょう！やる部位に困ったら `/recommend` を使ってね！")
-        await asyncio.sleep(60)  # 重複送信防止
-# 起動
 bot.run(DISCORD_BOT_TOKEN)
