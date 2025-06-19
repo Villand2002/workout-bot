@@ -9,6 +9,7 @@ import datetime
 from openai import OpenAI
 from collections import defaultdict
 from dotenv import load_dotenv
+import re
 
 # .env 読み込み
 load_dotenv()
@@ -31,28 +32,39 @@ db = firestore.client()
 # OpenAI初期化
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# commands.Botを使用（推奨方法）
+# Discord Bot設定
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
+
+# JSON抽出関数
+def extract_json(content):
+    """AIの返答からJSON部分だけ抽出"""
+    try:
+        match = re.search(r"```json\s*(\{.*?\})\s*```", content, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            match = re.search(r"(\{.*\})", content, re.DOTALL)
+            if match:
+                json_str = match.group(1)
+            else:
+                raise ValueError("JSON部分が抽出できませんでした")
+        return json.loads(json_str)
+    except Exception as e:
+        print(f"JSON抽出エラー: {e}")
+        raise
 
 @bot.event
 async def on_ready():
     print(f'{bot.user} でログインしました！')
     try:
-        # ギルド同期
         synced = await bot.tree.sync(guild=discord.Object(id=SERVER_ID))
         print(f'ギルド同期完了: {len(synced)}個のコマンド')
-        
-        # もしギルド同期が失敗したらグローバル同期
-        if len(synced) == 0:
-            print("ギルド同期失敗、グローバル同期を試行...")
-            global_synced = await bot.tree.sync()
-            print(f'グローバル同期完了: {len(global_synced)}個のコマンド')
-            
     except Exception as e:
         print(f'同期エラー: {e}')
 
+# 筋トレログ登録
 @bot.tree.command(name="workout_log", description="筋トレ記録を登録します", guild=discord.Object(id=SERVER_ID))
 @discord.app_commands.describe(
     category="部位カテゴリーを選択してください",
@@ -78,7 +90,7 @@ async def workout_log(interaction: discord.Interaction, category: discord.app_co
 
         user_id = str(interaction.user.id)
         data = {
-            'category': category.value,  # ここ注意：choiceのvalueを取る
+            'category': category.value,
             'exercise': exercise,
             'weight': weight,
             'reps': reps,
@@ -91,7 +103,7 @@ async def workout_log(interaction: discord.Interaction, category: discord.app_co
         if not interaction.response.is_done():
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
-
+# 筋トレ履歴
 @bot.tree.command(name="workout_history", description="最近の筋トレ履歴を表示します", guild=discord.Object(id=SERVER_ID))
 async def workout_history(interaction: discord.Interaction):
     try:
@@ -110,14 +122,16 @@ async def workout_history(interaction: discord.Interaction):
 
         message = "最近の記録:\n"
         for entry in logs:
-            ts = entry['timestamp'].strftime("%Y-%m-%d") if entry['timestamp'] else "日付不明"
-            message += f"{ts}: {entry['category']} - {entry['exercise']} {entry['weight']}kg x {entry['reps']}回\n"
+            ts = entry.get('timestamp')
+            ts_str = ts.strftime("%Y-%m-%d") if ts else "日付不明"
+            message += f"{ts_str}: {entry['category']} - {entry['exercise']} {entry['weight']}kg x {entry['reps']}回\n"
         await interaction.response.send_message(message)
     except Exception as e:
         print(f"Error in workout_history: {e}")
         if not interaction.response.is_done():
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
+# 筋トレおすすめ
 @bot.tree.command(name="workout_recommend", description="筋トレメニューをAIが提案します", guild=discord.Object(id=SERVER_ID))
 async def workout_recommend(interaction: discord.Interaction):
     try:
@@ -137,7 +151,7 @@ async def workout_recommend(interaction: discord.Interaction):
         for doc in docs:
             entry = doc.to_dict()
             category = entry['category']
-            ts = entry['timestamp']
+            ts = entry.get('timestamp')
             if ts:
                 if ts > category_dates[category]:
                     category_dates[category] = ts
@@ -170,7 +184,7 @@ async def workout_recommend(interaction: discord.Interaction):
         )
         reply = response.choices[0].message.content
         await interaction.followup.send(f"💡 今日のおすすめメニュー:\n{reply}")
-    
+
     except Exception as e:
         print(f"Error in workout_recommend: {e}")
         if interaction.response.is_done():
@@ -178,6 +192,7 @@ async def workout_recommend(interaction: discord.Interaction):
         else:
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
+# 英語日記コマンド
 @bot.tree.command(name="diary", description="英語日記を書いてAIにフィードバックしてもらいます", guild=discord.Object(id=SERVER_ID))
 async def diary(interaction: discord.Interaction, diary_text: str):
     try:
@@ -217,10 +232,8 @@ async def diary(interaction: discord.Interaction, diary_text: str):
 
         reply = response.choices[0].message.content
 
-        # JSONパース
-        feedback_json = json.loads(reply)
+        feedback_json = extract_json(reply)
 
-        # フィードバックを整形して表示用にまとめる
         feedback_message = f"""📝 フィードバック:
 【文法や表現の誤り】\n{feedback_json['grammar']}
 
@@ -232,7 +245,6 @@ async def diary(interaction: discord.Interaction, diary_text: str):
 """
         await interaction.followup.send(feedback_message)
 
-        # Firestoreに保存
         user_id = str(interaction.user.id)
         date_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -249,6 +261,5 @@ async def diary(interaction: discord.Interaction, diary_text: str):
             await interaction.followup.send("エラーが発生しました。")
         else:
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
-
 
 bot.run(DISCORD_BOT_TOKEN)
