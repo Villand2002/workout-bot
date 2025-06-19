@@ -131,7 +131,11 @@ async def workout_history(interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
-# 筋トレおすすめ（デバッグ版）
+
+
+
+
+# 筋トレおすすめ（完全安定版）
 @bot.tree.command(name="workout_recommend", description="筋トレメニューをAIが提案します", guild=discord.Object(id=SERVER_ID))
 async def workout_recommend(interaction: discord.Interaction):
     try:
@@ -154,7 +158,7 @@ async def workout_recommend(interaction: discord.Interaction):
         docs = logs_ref.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(100).stream()
         print("Firestore query executed")
 
-        category_dates = defaultdict(lambda: datetime.datetime(2000, 1, 1))
+        category_dates = defaultdict(lambda: datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc))
         recent_logs = []
         doc_count = 0
 
@@ -174,8 +178,9 @@ async def workout_recommend(interaction: discord.Interaction):
                 if ts > category_dates[category]:
                     category_dates[category] = ts
                     
-                # 直近3日間のチェック（UTCとの時差を考慮）
-                three_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=3)
+                # 直近3日間のチェック
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                three_days_ago = now_utc - datetime.timedelta(days=3)
                 if ts >= three_days_ago:
                     ts_str = ts.strftime("%Y-%m-%d")
                     recent_logs.append(f"{ts_str}: {category} - {entry.get('exercise', 'Unknown')} {entry.get('weight', 0)}kg x {entry.get('reps', 0)}回")
@@ -206,7 +211,6 @@ async def workout_recommend(interaction: discord.Interaction):
 
         print("Sending request to OpenAI...")
         
-        # OpenAI APIの呼び出し
         response = openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -219,8 +223,12 @@ async def workout_recommend(interaction: discord.Interaction):
         
         print("OpenAI response received")
         reply = response.choices[0].message.content
-        print(f"AI reply: {reply[:100]}...")
-        
+        print(f"AI reply (truncated): {reply[:100]}...")
+
+        # Discord文字数制限を考慮してカット
+        MAX_DISCORD_MESSAGE = 1900
+        reply = reply[:MAX_DISCORD_MESSAGE]
+
         await interaction.followup.send(f"💡 今日のおすすめメニュー:\n{reply}")
         print("Response sent successfully")
 
@@ -237,6 +245,7 @@ async def workout_recommend(interaction: discord.Interaction):
                 await interaction.response.send_message(f"エラーが発生しました: {str(e)}", ephemeral=True)
         except Exception as followup_error:
             print(f"Error sending error message: {followup_error}")
+
 
 # 英語日記コマンド
 @bot.tree.command(name="diary", description="英語日記を書いてAIにフィードバックしてもらいます", guild=discord.Object(id=SERVER_ID))
