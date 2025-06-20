@@ -207,6 +207,7 @@ async def workout_recommend(interaction: discord.Interaction):
 {recent_summary}
 
 筋肉のバランス、疲労を考慮して今日のダンベルトレーニングメニューを提案してください。
+その際に部位のカテゴリは「{target_category}」の中から一つ選んでください。
 """
 
         print("Sending request to OpenAI...")
