@@ -139,3 +139,6 @@ diary_logs (collection)
              └─ timestamp: 2025-07-17T10:00:00Z
 ```
 
+##　展望
+・aws amplifyあたりを利用した認証周りの実装
+・langgraphを利用した機能の実装
